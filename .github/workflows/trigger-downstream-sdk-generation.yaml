@@ -1,0 +1,191 @@
+name: Trigger Downstream SDK Generation
+
+permissions:
+  checks: write
+  contents: write
+  pull-requests: write
+  statuses: write
+  id-token: write
+  issues: write
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  update_spec_and_tag_registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Speakeasy CLI
+        uses: speakeasy-api/setup-speakeasy-action@v1
+        with:
+          speakeasy_version: latest
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.head_ref }}
+
+      - name: Run Speakeasy workflow
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+        run: speakeasy run
+
+  trigger_sdk_workflows:
+    needs: update_spec_and_tag_registry
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: typescript
+            owner: speakeasy-api
+            repo: examples-downstream-spec-sdk-typescript
+          - language: python
+            owner: speakeasy-api
+            repo: examples-downstream-spec-sdk-python
+    steps:
+      - name: Prepare branch tag
+        id: tag
+        run: echo "name=$(echo "${{ github.head_ref }}" | sed 's|/|-|g')" >> $GITHUB_OUTPUT
+
+      - name: Initialize Status Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          language="${{ matrix.language }}"
+          repo="${{ matrix.repo }}"
+          owner="${{ matrix.owner }}"
+          marker="<!-- sdk-generation-status-$language -->"
+
+          comment_body="$marker
+          ### ${language} SDK Generation
+
+          | Repository | Workflow Run | Status | SDK PR |
+          | --- | --- | --- |--- |
+          | [$repo](https://github.com/$owner/$repo) | Pending | ⏳ Pending | Pending |"
+
+          # Find if a comment with this marker already exists
+          existing_comment_id=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq "map(select(.body | contains(\"$marker\"))) | last | .id // empty")
+
+          if [[ -n "$existing_comment_id" ]]; then
+            gh api --method PATCH "repos/${{ github.repository }}/issues/comments/$existing_comment_id" -f body="$comment_body" > /dev/null
+            echo "SDK_COMMENT_ID=$existing_comment_id" >> $GITHUB_ENV
+          else
+            new_comment_id=$(gh api --method POST "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+              -f body="$comment_body" --jq '.id')
+            echo "SDK_COMMENT_ID=$new_comment_id" >> $GITHUB_ENV
+          fi
+
+      - name: Trigger ${{ matrix.language }} SDK generation
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SDK_TOKEN }}
+        run: |
+          owner="${{ matrix.owner }}"
+          repo="${{ matrix.repo }}"
+          language="${{ matrix.language }}"
+          branch="${{ github.head_ref }}"
+          tag_name="${{ steps.tag.outputs.name }}"
+
+          # Trigger the workflow in the downstream SDK repo
+          gh workflow run generate-sdk-from-spec.yaml --repo "$owner/$repo" --ref main \
+            --field force="true" \
+            --field feature_branch="$branch" \
+            --field environment="tag=$tag_name"
+
+          # Wait for the workflow to register and capture its run ID
+          sleep 10
+          run_id=$(gh run list --repo "$owner/$repo" --workflow generate-sdk-from-spec.yaml --limit 1 --json databaseId --jq '.[0].databaseId')
+
+          if [[ -z "$run_id" ]]; then
+            echo "Failed to get run ID"
+            exit 1
+          fi
+
+          echo "WORKFLOW_RUN_ID=$run_id" >> $GITHUB_ENV
+          run_url="https://github.com/$owner/$repo/actions/runs/$run_id"
+          echo "WORKFLOW_RUN_URL=$run_url" >> $GITHUB_ENV
+
+          # Update comment with the workflow run link
+          marker="<!-- sdk-generation-status-$language -->"
+          pending_body="$marker
+          ### ${language} SDK Generation
+
+          | Repository | Workflow Run | Status | SDK PR |
+          | --- | --- | --- | --- |
+          | [$repo](https://github.com/$owner/$repo) | [Workflow run]($run_url) | ⏳ In Progress | Pending |"
+
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh api --method PATCH \
+            "repos/${{ github.repository }}/issues/comments/$SDK_COMMENT_ID" \
+            -f body="$pending_body" > /dev/null
+
+      - name: Poll Workflow Status
+        env:
+          GH_TOKEN: ${{ secrets.DOWNSTREAM_SDK_TOKEN }}
+        run: |
+          owner="${{ matrix.owner }}"
+          repo="${{ matrix.repo }}"
+          run_id="$WORKFLOW_RUN_ID"
+
+          while true; do
+            resp=$(gh api "repos/$owner/$repo/actions/runs/$run_id")
+            status=$(echo "$resp" | jq -r '.status')
+            conclusion=$(echo "$resp" | jq -r '.conclusion')
+
+            if [[ "$status" == "completed" ]]; then
+              if [[ "$conclusion" == "success" ]]; then
+                echo "WORKFLOW_SUCCESS=true" >> $GITHUB_ENV
+                break
+              else
+                echo "WORKFLOW_SUCCESS=false" >> $GITHUB_ENV
+                break
+              fi
+            fi
+            sleep 30
+          done
+
+      - name: Finalize PR Comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SDK_TOKEN: ${{ secrets.DOWNSTREAM_SDK_TOKEN }}
+        run: |
+          language="${{ matrix.language }}"
+          repo="${{ matrix.repo }}"
+          owner="${{ matrix.owner }}"
+          branch="${{ github.head_ref }}"
+          marker="<!-- sdk-generation-status-$language -->"
+
+          # Try to find existing PR in the SDK repo
+          pr_url=$(GH_TOKEN="$SDK_TOKEN" gh pr list --repo "$owner/$repo" --head "$branch" --json url --jq '.[0].url' 2>/dev/null || echo "")
+
+          if [[ "$WORKFLOW_SUCCESS" == "true" ]]; then
+            status_cell="✅ Success"
+          else
+            status_cell="❌ Failed"
+          fi
+
+          run_cell="[Workflow run]($WORKFLOW_RUN_URL)"
+
+          if [[ -n "$pr_url" && "$pr_url" != "null" ]]; then
+            pr_cell="[SDK PR]($pr_url)"
+          else
+            compare_url="https://github.com/$owner/$repo/compare/main...$branch"
+            pr_cell="[Review Changes]($compare_url)"
+          fi
+
+          comment_body="$marker
+          ### ${language} SDK Generation
+
+          | Repository | Workflow Run | Status | SDK PR |
+          | --- | --- | --- | --- |
+          | [$repo](https://github.com/$owner/$repo) | $run_cell | $status_cell | $pr_cell |"
+
+          gh api --method PATCH "repos/${{ github.repository }}/issues/comments/$SDK_COMMENT_ID" -f body="$comment_body"
+
+          if [[ "$WORKFLOW_SUCCESS" != "true" ]]; then
+            exit 1
+          fi

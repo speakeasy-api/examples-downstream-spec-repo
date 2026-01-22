@@ -1,0 +1,9 @@
+workflowVersion: 1.0.0
+speakeasyVersion: latest
+sources:
+  example-api:
+    inputs:
+      - location: specs/openapi.yaml
+    registry:
+      location: registry.speakeasy.com/speakeasy-self/speakeasy-self/example-api
+targets: {}
