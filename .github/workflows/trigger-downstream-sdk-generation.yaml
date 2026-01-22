@@ -17,16 +17,16 @@ jobs:
   update_spec_and_tag_registry:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Speakeasy CLI
-        uses: speakeasy-api/setup-speakeasy-action@v1
-        with:
-          speakeasy_version: latest
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ github.head_ref }}
+
+      - name: Install Speakeasy CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/speakeasy-api/speakeasy/main/install.sh | sh
+          echo "$HOME/.speakeasy/bin" >> $GITHUB_PATH
 
       - name: Run Speakeasy workflow
         env:
@@ -94,7 +94,7 @@ jobs:
           gh workflow run generate-sdk-from-spec.yaml --repo "$owner/$repo" --ref main \
             --field force="true" \
             --field feature_branch="$branch" \
-            --field environment="tag=$tag_name"
+            --field environment="TAG=$tag_name"
 
           # Wait for the workflow to register and capture its run ID
           sleep 10

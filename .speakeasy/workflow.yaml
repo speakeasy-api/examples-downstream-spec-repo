@@ -5,5 +5,5 @@ sources:
     inputs:
       - location: specs/openapi.yaml
     registry:
-      location: registry.speakeasy.com/speakeasy-self/speakeasy-self/example-api
+      location: registry.speakeasyapi.dev/speakeasy-self/speakeasy-self/example-api
 targets: {}

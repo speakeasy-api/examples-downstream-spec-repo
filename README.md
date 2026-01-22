@@ -45,7 +45,8 @@ spec-repo-downstream-sdks/
 ├── .speakeasy/
 │   └── workflow.yaml               # Source-only workflow
 ├── .github/workflows/
-│   └── trigger-downstream-sdk-generation.yaml
+│   ├── trigger-downstream-sdk-generation.yaml  # Triggers SDK generation on PR
+│   └── reconcile-sdk-prs.yaml                  # Merges/closes SDK PRs when spec PR closes
 ├── specs/
 │   └── openapi.yaml                # OpenAPI spec
 └── README.md
@@ -142,12 +143,14 @@ jobs:
 ## Workflow
 
 1. **Create a PR** in the spec repository with changes to `specs/openapi.yaml`
-2. **Workflow runs**:
+2. **SDK generation triggers**:
    - `speakeasy run` executes and tags the spec in the registry with the branch name
    - Downstream SDK workflows are triggered via `gh workflow run`
-   - The spec PR is updated with a comment showing generation status
+   - The spec PR is updated with a comment showing generation status and links to SDK PRs
 3. **Review SDK PRs** in the downstream repositories
-4. **Merge** the spec PR and SDK PRs as needed
+4. **Merge or close the spec PR**:
+   - **If merged**: The `reconcile-sdk-prs.yaml` workflow automatically merges all downstream SDK PRs
+   - **If closed without merging**: The workflow closes all downstream SDK PRs with a comment explaining why
 
 ## Downstream SDK repositories
 
