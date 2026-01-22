@@ -94,7 +94,7 @@ jobs:
           gh workflow run generate-sdk-from-spec.yaml --repo "$owner/$repo" --ref main \
             --field force="true" \
             --field feature_branch="$branch" \
-            --field environment="tag=$tag_name"
+            --field environment="TAG=$tag_name"
 
           # Wait for the workflow to register and capture its run ID
           sleep 10
